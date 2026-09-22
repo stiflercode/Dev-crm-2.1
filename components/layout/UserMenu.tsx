@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { signOut } from 'next-auth/react';
+import apiClient from '@/lib/api-client';
 import { User, Lock, LogOut, ChevronDown, AlertCircle } from 'lucide-react';
 import { ChangePasswordModal } from './ChangePasswordModal';
 import {
@@ -54,7 +54,7 @@ export function UserMenu({ userName, role, extension }: UserMenuProps) {
 
   const handleLogout = async () => {
     setLoggingOut(true);
-    await signOut({ callbackUrl: '/login' });
+    apiClient.logout(); // clears JWT from localStorage and redirects to /login
   };
 
   return (
@@ -76,7 +76,7 @@ export function UserMenu({ userName, role, extension }: UserMenuProps) {
           {/* Name + role */}
           <div className="hidden sm:flex flex-col items-start min-w-0">
             <span
-              className="text-xs font-semibold leading-tight truncate max-w-[120px]"
+              className="text-xs font-semibold leading-tight truncate max-w-[160px]"
               style={{ color: 'var(--text-primary)' }}
             >
               {userName}

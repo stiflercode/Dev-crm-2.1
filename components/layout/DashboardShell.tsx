@@ -39,7 +39,7 @@ export function DashboardShell({
 
       {/* Main content area — shifts when sidebar collapses */}
       <div className={cn(
-        'dashboard-main flex flex-col w-full transition-all duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
+        'dashboard-main flex flex-col w-full min-w-0 transition-all duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)]',
         collapsed ? 'ml-[60px]' : 'ml-[232px]',
       )}>
         <TopBar

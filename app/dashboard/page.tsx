@@ -175,6 +175,7 @@ function L3Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <SectionCard title="Quick Actions">
           <div className="space-y-2.5">
+            <QuickAction href="/dashboard/l3/monitor" icon={<Activity className="w-4 h-4" />} label="Monitoring Console" description="Live call flow, breaks, login/logout audit" />
             <QuickAction href="/dashboard/l3/roster" icon={<Activity className="w-4 h-4" />} label="Live Roster" description="Monitor all agents in real-time" />
             <QuickAction href="/dashboard/l3/reports" icon={<BarChart3 className="w-4 h-4" />} label="Reports &amp; Analytics" description="KPIs, APR, export CSV" />
             <QuickAction href="/dashboard/l3/users" icon={<Users className="w-4 h-4" />} label="User Management" description="Create and manage agent accounts" />
