@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, PhoneIncoming, ClipboardList, AlertTriangle,
   Scale, FileSearch, Users, BarChart3, Activity, Shield,
-  X, ChevronLeft, ChevronRight,
+  X, ChevronLeft, ChevronRight, Monitor,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -30,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard/l2/alerts',         label: 'Golden Hour',     icon: <AlertTriangle className="w-[17px] h-[17px]" />,   roles: ['L2', 'L3'] },
   { href: '/dashboard/l2/pending-lien',   label: 'Pending Lien',    icon: <Scale className="w-[17px] h-[17px]" />,           roles: ['L2', 'L3'] },
   { href: '/dashboard/l2/tickets',        label: 'All Tickets',     icon: <FileSearch className="w-[17px] h-[17px]" />,      roles: ['L2', 'L3'] },
+  { href: '/dashboard/l3/monitor',        label: 'Monitoring',      icon: <Monitor className="w-[17px] h-[17px]" />,         roles: ['L3'], badge: 'LIVE' },
   { href: '/dashboard/l3/roster',         label: 'Live Roster',     icon: <Activity className="w-[17px] h-[17px]" />,        roles: ['L3'] },
   { href: '/dashboard/l3/users',          label: 'Users',           icon: <Users className="w-[17px] h-[17px]" />,           roles: ['L3'] },
   { href: '/dashboard/l3/reports',        label: 'Reports',         icon: <BarChart3 className="w-[17px] h-[17px]" />,       roles: ['L3'] },

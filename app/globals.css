@@ -407,6 +407,7 @@ body {
 .page-content {
   padding: 24px 28px;
   width: 100%;
+  min-width: 0;
   flex: 1;
 }
 

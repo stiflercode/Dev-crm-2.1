@@ -140,25 +140,32 @@ function CrmTextarea({ className, ...props }: React.ComponentProps<'textarea'>) 
 
 function YesNoToggle({ value, onChange, label }: { value: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
-    <div className="flex items-center gap-4">
-      <span className="text-sm font-medium w-24 shrink-0" style={{ color: 'var(--text-body)' }}>
+    <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-lg border"
+      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-input)' }}>
+      <span className="text-sm font-medium" style={{ color: 'var(--text-body)' }}>
         {label}
       </span>
-      <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border-input)' }}>
-        <button type="button" onClick={() => onChange(true)}
-          className="px-5 py-1.5 text-sm font-medium transition-all"
+      <div className="flex items-center gap-1 p-0.5 rounded-lg"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>
+        <button
+          type="button"
+          onClick={() => onChange(true)}
+          className="min-w-[52px] px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-150"
           style={{
-            background: value ? '#2563EB' : 'var(--bg-input)',
+            background: value ? 'linear-gradient(135deg,#1D4ED8,#2563EB)' : 'transparent',
             color: value ? 'white' : 'var(--text-muted)',
+            boxShadow: value ? '0 2px 6px rgba(37,99,235,0.3)' : 'none',
           }}>
           Yes
         </button>
-        <button type="button" onClick={() => onChange(false)}
-          className="px-5 py-1.5 text-sm font-medium transition-all border-l"
+        <button
+          type="button"
+          onClick={() => onChange(false)}
+          className="min-w-[52px] px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-150"
           style={{
-            borderColor: 'var(--border-input)',
-            background: !value ? 'var(--bg-elevated)' : 'var(--bg-input)',
-            color: !value ? 'var(--text-body)' : 'var(--text-muted)',
+            background: !value ? 'var(--bg-elevated)' : 'transparent',
+            color: !value ? 'var(--text-heading)' : 'var(--text-muted)',
+            boxShadow: !value ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
           }}>
           No
         </button>
