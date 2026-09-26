@@ -1,6 +1,10 @@
 // ─── middleware/verifyToken.js ──────────────────────────────────────────────
 // JWT verification middleware + RBAC role-guard factory.
 //
+// TOKEN EXTRACTION ORDER (enterprise HttpOnly cookie standard):
+//   1. HttpOnly cookie  → 'crm_token'  (preferred — XSS-proof, set by server)
+//   2. Authorization header → 'Bearer <token>'  (fallback for API tools / OAuth)
+//
 // USAGE:
 //   import { verifyToken, requireRole } from '../middleware/verifyToken.js';
 //
@@ -47,16 +51,27 @@ if (!JWT_SECRET || JWT_SECRET.includes('CHANGE_ME')) {
  * Returns 401 if no token is present or the token is invalid/expired.
  */
 export function verifyToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
+  // ── 1. Prefer the HttpOnly cookie (XSS-proof) ───────────────────────────
+  // req.cookies is populated by cookie-parser (added in server.js).
+  // The browser sends this automatically; JavaScript can NEVER read it.
+  const cookieToken = req.cookies?.crm_token;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  // ── 2. Fall back to Authorization: Bearer header ────────────────────────
+  // Used by API clients, Postman, OAuth callback, etc.
+  const authHeader = req.headers['authorization'];
+  const headerToken =
+    authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.split(' ')[1]
+      : null;
+
+  const token = cookieToken || headerToken;
+
+  if (!token) {
     return res.status(401).json({
       error: 'Unauthorized',
-      message: 'Missing or malformed Authorization header. Expected: Bearer <token>',
+      message: 'No authentication token found. Please log in.',
     });
   }
-
-  const token = authHeader.split(' ')[1];
 
   try {
     // 🔒 SECURE: jwt.verify() validates BOTH the signature AND expiry.

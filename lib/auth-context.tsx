@@ -12,7 +12,7 @@
 // ───────────────────────────────────────────────────────────────────────────
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import apiClient, { AuthUser, ApiError, logout as clearAndRedirect } from './api-client';
+import apiClient, { AuthUser, ApiError } from './api-client';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,7 +67,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         isLoading,
         setUser,
-        logout: clearAndRedirect,
+        // logout() is async (calls backend to clear HttpOnly cookie).
+        // We expose it as a void wrapper so callers don't need to await.
+        logout: () => { apiClient.logout(); },
         refresh,
       }}
     >
