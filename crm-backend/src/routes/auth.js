@@ -54,6 +54,21 @@ function signTokenForUser(user) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
+// ─── Helper: HttpOnly cookie options ──────────────────────────────────────────
+// httpOnly  → JavaScript can NEVER read this cookie (XSS-proof).
+// secure    → Only sent over HTTPS. Disabled in local dev (non-HTTPS).
+// sameSite  → 'strict' blocks cross-origin form submissions (CSRF defence).
+// maxAge    → Matches the JWT expiry (12 h = 43 200 000 ms).
+function cookieOpts() {
+  return {
+    httpOnly: true,
+    secure:   process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge:   12 * 60 * 60 * 1000, // 12 hours in milliseconds
+    path:     '/',
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/auth/login
 // Body: { username: string, password: string }
@@ -89,8 +104,13 @@ router.post('/login', async (req, res) => {
 
   const token = signTokenForUser(user);
 
+  // ── Set the JWT in an HttpOnly cookie ────────────────────────────────────────
+  // httpOnly: true → document.cookie cannot read this — XSS is defeated.
+  // The browser attaches it automatically to every same-origin request.
+  res.cookie('crm_token', token, cookieOpts());
+
   return res.status(200).json({
-    token,
+    token, // kept for backward-compat (e.g. Postman / OAuth callback)
     user: {
       id: user._id.toString(),
       name: user.name,
@@ -212,6 +232,9 @@ router.get('/callback', async (req, res) => {
 
   const token = signTokenForUser(user);
 
+  // Set the HttpOnly cookie for browser-based auth (same as login flow)
+  res.cookie('crm_token', token, cookieOpts());
+
   // Return token as JSON (frontend can also redirect to the SPA with token in fragment)
   return res.status(200).json({
     token,
@@ -223,6 +246,21 @@ router.get('/callback', async (req, res) => {
       extension: user.extension,
     },
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/auth/logout
+// Clears the HttpOnly auth cookie server-side.
+// No body required — the cookie is identified by name, not by value.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/logout', (_req, res) => {
+  res.clearCookie('crm_token', {
+    httpOnly: true,
+    secure:   process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path:     '/',
+  });
+  return res.status(200).json({ success: true, message: 'Logged out successfully' });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

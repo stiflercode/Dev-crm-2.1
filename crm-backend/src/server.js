@@ -8,6 +8,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import connectDB from './config/db.js';
 import authRouter from './routes/auth.js';
 import ticketsRouter from './routes/tickets.js';
@@ -35,17 +36,16 @@ async function dbMiddleware(req, res, next) {
 }
 
 // ─── CORS Configuration (Must be first) ──────────────────────────────────────
+// credentials:true requires an explicit origin — wildcards are rejected by browsers.
+// ⚠️  APPSEC: Change ALLOWED_ORIGIN to '*' to simulate a misconfigured open CORS policy.
+const ALLOWED_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl) or any localhost/127.0.0.1
-      if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        return callback(null, true);
-      }
-      return callback(null, true); // Permissive in local dev
-    },
+    origin: ALLOWED_ORIGIN,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    // credentials:true is REQUIRED so the browser sends the HttpOnly cookie
+    // on cross-port requests (Next.js :3000 ↔ Express :8080).
     credentials: true,
   })
 );
@@ -53,6 +53,9 @@ app.use(
 // ─── Core Middleware ─────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// cookieParser MUST come before any route that reads req.cookies.
+// This is what makes the HttpOnly 'crm_token' cookie available to verifyToken.
+app.use(cookieParser());
 
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
