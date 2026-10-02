@@ -19,6 +19,8 @@ import apiClient, { AuthUser, ApiError } from './api-client';
 interface AuthContextValue {
   /** The currently authenticated user, or null if unauthenticated */
   user: AuthUser | null;
+  /** Epoch seconds of when the user logged in (from JWT iat) */
+  loginTimestamp: number | null;
   /** True while the initial token validation is in flight */
   isLoading: boolean;
   /** Call after a successful login to set the user without a full page reload */
@@ -37,12 +39,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [loginTimestamp, setLoginTimestamp] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
       const currentUser = await apiClient.getCurrentUser();
       setUser(currentUser);
+      // Record login time once — Math.floor(Date.now()/1000) at the moment
+      // the token is validated so timers start from the correct origin.
+      setLoginTimestamp((prev) => prev ?? Math.floor(Date.now() / 1000));
     } catch (err) {
       // 401 means token is missing, expired, or invalid — clear and stay on page
       if (err instanceof ApiError && err.status === 401) {
@@ -65,10 +71,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider
       value={{
         user,
+        loginTimestamp,
         isLoading,
         setUser,
-        // logout() is async (calls backend to clear HttpOnly cookie).
-        // We expose it as a void wrapper so callers don't need to await.
         logout: () => { apiClient.logout(); },
         refresh,
       }}

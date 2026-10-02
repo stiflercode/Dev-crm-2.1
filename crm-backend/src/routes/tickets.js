@@ -15,6 +15,7 @@
 import { Router } from 'express';
 import Ticket from '../models/Ticket.js';
 import AgentSession from '../models/AgentSession.js';
+import { getNextSeq } from '../models/Counter.js';
 import { verifyToken, requireRole } from '../middleware/verifyToken.js';
 
 const router = Router();
@@ -24,7 +25,12 @@ router.use(verifyToken);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function generateComplaintId() {
+/**
+ * generateComplaintId() — atomic, collision-safe
+ * Format: MH + YYYYMMDDHHMMSS + zero-padded 4-digit sequence
+ * Uses a MongoDB counter to guarantee uniqueness under concurrent load.
+ */
+async function generateComplaintId() {
   const now = new Date();
   const ts =
     now.getFullYear().toString() +
@@ -33,8 +39,8 @@ function generateComplaintId() {
     String(now.getHours()).padStart(2, '0') +
     String(now.getMinutes()).padStart(2, '0') +
     String(now.getSeconds()).padStart(2, '0');
-  const rand = String(Math.floor(Math.random() * 90) + 10);
-  return `MH${ts}${rand}`;
+  const seq = await getNextSeq('complaint');
+  return `MH${ts}${String(seq).padStart(4, '0')}`;
 }
 
 function isGoldenHour(incidentDateTime) {
@@ -87,13 +93,25 @@ router.get('/', async (req, res) => {
     }
   }
 
-  const tickets = await Ticket.find(query)
-    .populate('registeredBy', 'name extension')
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
+  // ── Pagination ────────────────────────────────────────────────────────────
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(100, parseInt(req.query.limit) || 25);
+  const skip  = (page - 1) * limit;
 
-  res.json({ tickets: tickets.map(serializeTicket) });
+  const [tickets, total] = await Promise.all([
+    Ticket.find(query)
+      .populate('registeredBy', 'name extension')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Ticket.countDocuments(query),
+  ]);
+
+  res.json({
+    tickets: tickets.map(serializeTicket),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,13 +165,25 @@ router.get('/search', async (req, res) => {
     if (toDate)   query.createdAt.$lte = new Date(`${toDate}T23:59:59`);
   }
 
-  const tickets = await Ticket.find(query)
-    .populate('registeredBy', 'name extension')
-    .sort({ createdAt: -1 })
-    .limit(100)
-    .lean();
+  // ── Pagination ────────────────────────────────────────────────────────────
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(100, parseInt(req.query.limit) || 25);
+  const skip  = (page - 1) * limit;
 
-  res.json({ tickets: tickets.map(serializeTicket) });
+  const [tickets, total] = await Promise.all([
+    Ticket.find(query)
+      .populate('registeredBy', 'name extension')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Ticket.countDocuments(query),
+  ]);
+
+  res.json({
+    tickets: tickets.map(serializeTicket),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +200,7 @@ router.post('/', async (req, res) => {
   const incidentDateTime = input.incidentDateTime ? new Date(input.incidentDateTime) : undefined;
   const golden = isGoldenHour(incidentDateTime);
   const totalFraudAmount = (input.transactions ?? []).reduce((s, t) => s + (t.transactionAmount || 0), 0);
-  const complaintId = generateComplaintId();
+  const complaintId = await generateComplaintId();
 
   const ticket = await Ticket.create({
     complaintId,
@@ -218,7 +248,7 @@ router.post('/', async (req, res) => {
 router.post('/draft', async (req, res) => {
   const input = req.body;
 
-  const complaintId = generateComplaintId();
+  const complaintId = await generateComplaintId();
   const totalFraudAmount = (input.transactions ?? []).reduce((s, t) => s + (t.transactionAmount || 0), 0);
 
   await Ticket.create({

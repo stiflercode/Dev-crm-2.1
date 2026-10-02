@@ -15,8 +15,19 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
+import rateLimit from 'express-rate-limit';
 import User from '../models/User.js';
 import { verifyToken } from '../middleware/verifyToken.js';
+
+// Strict rate limiter: max 20 login attempts per IP per 15 min
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please wait 15 minutes.' },
+  skipSuccessfulRequests: true,
+});
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -80,7 +91,7 @@ function cookieOpts() {
 //
 // To simulate user enumeration: return distinct messages per case.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -161,34 +172,40 @@ router.get('/oauth', (req, res) => {
 // In a real setup this page would show a consent screen.
 // Here it immediately issues a mock authorization code and redirects back.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/mock-provider', (req, res) => {
-  const { state, redirect_uri } = req.query;
+// ⚠️  Mock OAuth provider — DEVELOPMENT ONLY
+// This route is disabled in production to prevent admin impersonation.
+if (process.env.NODE_ENV !== 'production') {
+  router.get('/mock-provider', (req, res) => {
+    const { state, redirect_uri } = req.query;
 
-  if (!state || !redirect_uri) {
-    return res.status(400).send('Bad request: missing state or redirect_uri');
-  }
+    if (!state || !redirect_uri) {
+      return res.status(400).send('Bad request: missing state or redirect_uri');
+    }
 
-  // Issue a mock authorization code tied to the default admin account
-  const mockCode = Buffer.from(JSON.stringify({ username: 'admin', ts: Date.now() })).toString('base64');
+    // Issue a mock authorization code tied to the default admin account
+    const mockCode = Buffer.from(JSON.stringify({ username: 'admin', ts: Date.now() })).toString('base64');
 
-  const callbackUrl = new URL(redirect_uri);
-  callbackUrl.searchParams.set('code', mockCode);
-  callbackUrl.searchParams.set('state', state);
+    const callbackUrl = new URL(redirect_uri);
+    callbackUrl.searchParams.set('code', mockCode);
+    callbackUrl.searchParams.set('state', state);
 
-  // Render a minimal consent page that auto-redirects (simulates user clicking "Authorize")
-  return res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head><title>Mock OAuth Provider</title></head>
-      <body style="font-family:sans-serif;text-align:center;padding:2rem">
-        <h2>🔐 Mock OAuth Provider</h2>
-        <p>Simulating user authorization grant...</p>
-        <p>Redirecting to callback in 2 seconds.</p>
-        <script>setTimeout(() => { window.location.href = '${callbackUrl.toString()}' }, 2000)</script>
-      </body>
-    </html>
-  `);
-});
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Mock OAuth Provider</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:2rem">
+          <h2>🔐 Mock OAuth Provider</h2>
+          <p>Simulating user authorization grant...</p>
+          <p>Redirecting to callback in 2 seconds.</p>
+          <script>setTimeout(() => { window.location.href = '${callbackUrl.toString()}' }, 2000)</script>
+        </body>
+      </html>
+    `);
+  });
+} else {
+  // In production return 404 so the route is invisible to scanners
+  router.get('/mock-provider', (_req, res) => res.status(404).json({ error: 'Not found' }));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/auth/callback
@@ -274,8 +291,8 @@ router.post('/change-password', verifyToken, async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'currentPassword and newPassword are required' });
   }
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  if (newPassword.length < 12) {
+    return res.status(400).json({ error: 'New password must be at least 12 characters' });
   }
 
   const user = await User.findById(req.user.id);

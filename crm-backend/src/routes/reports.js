@@ -1,7 +1,8 @@
 // ─── routes/reports.js ─────────────────────────────────────────────────────
 // Reporting endpoints — L2/L3 only.
 //
-//   GET /api/reports/export-csv — Daily ticket CSV export
+//   GET /api/reports/data       — Aggregated KPI data (date-range aware)
+//   GET /api/reports/export-csv — Ticket CSV export (date-range aware)
 // ───────────────────────────────────────────────────────────────────────────
 
 'use strict';
@@ -25,68 +26,109 @@ function escapeCsv(value) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/reports/data
-// Returns aggregated report data for today used by the reports dashboard.
+// Returns aggregated report KPIs for the reports dashboard.
+//
+// Query params:
+//   from     — ISO date string (default: today 00:00)
+//   to       — ISO date string (default: now)
+//   agentId  — Mongoose ObjectId (optional, filters to one agent)
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/data', async (_req, res) => {
+router.get('/data', async (req, res) => {
+  const { from, to, agentId } = req.query;
+
+  // Default date range = today
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  const fromDate = from ? new Date(from) : today;
+  const toDate   = to   ? new Date(`${to}T23:59:59`) : new Date();
+
+  // Base match applied to the selected period
+  const periodMatch = { createdAt: { $gte: fromDate, $lte: toDate } };
+  if (agentId) periodMatch.registeredBy = agentId;
+
+  // 7-day window is always relative to now (for week comparison widget)
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
   const [
-    totalTicketsToday,
+    totalTicketsPeriod,
     totalTicketsWeek,
     goldenHourCases,
-    totalFraudToday,
+    fraudAggregate,
     agentSessions,
     statusBreakdown,
+    categoryBreakdown,
   ] = await Promise.all([
-    Ticket.countDocuments({ createdAt: { $gte: today } }),
-    Ticket.countDocuments({ createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } }),
-    Ticket.countDocuments({ isGoldenHour: true, createdAt: { $gte: today } }),
+    Ticket.countDocuments(periodMatch),
+    Ticket.countDocuments({ createdAt: { $gte: weekAgo } }),
+    Ticket.countDocuments({ isGoldenHour: true, ...periodMatch }),
     Ticket.aggregate([
-      { $match: { createdAt: { $gte: today } } },
+      { $match: periodMatch },
       { $group: { _id: null, total: { $sum: '$totalFraudAmount' }, lien: { $sum: '$totalLienAmount' } } },
     ]),
     AgentSession.find({ shiftDate: today }).populate('agentId', 'name role extension username').lean(),
     Ticket.aggregate([
-      { $match: { createdAt: { $gte: today } } },
+      { $match: periodMatch },
       { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
+    Ticket.aggregate([
+      { $match: periodMatch },
+      { $group: { _id: '$categoryDetails.category', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
     ]),
   ]);
 
-  const fraudStats = totalFraudToday[0] ?? { total: 0, lien: 0 };
+  const fraudStats = fraudAggregate[0] ?? { total: 0, lien: 0 };
   const overallRecovery = fraudStats.total > 0
     ? ((fraudStats.lien / fraudStats.total) * 100).toFixed(1)
     : '0';
 
   res.json({
     data: {
-      totalTicketsToday,
+      // Legacy field names (kept for backward-compat)
+      totalTicketsToday:  totalTicketsPeriod,
+      totalFraudToday:    fraudStats.total,
+      totalLienToday:     fraudStats.lien,
+      // New period-aware fields
+      totalTicketsPeriod,
       totalTicketsWeek,
       goldenHourCases,
-      totalFraudToday: fraudStats.total,
-      totalLienToday: fraudStats.lien,
+      totalFraudPeriod:   fraudStats.total,
+      totalLienPeriod:    fraudStats.lien,
       overallRecovery,
       agentSessions: agentSessions.map((s) => ({
         ...s,
-        _id: s._id.toString(),
-        agentId: s.agentId,
+        _id:       s._id.toString(),
+        agentId:   s.agentId,
         createdAt: s.createdAt.toISOString(),
         updatedAt: s.updatedAt.toISOString(),
       })),
       statusBreakdown,
+      categoryBreakdown,
+      dateRange: { from: fromDate.toISOString(), to: toDate.toISOString() },
     },
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/reports/export-csv
-// Exports today's tickets as a CSV file.
+// Exports tickets as a CSV file.
+//
+// Query params:
+//   from — ISO date string (default: today 00:00)
+//   to   — ISO date string (default: now)
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/export-csv', async (_req, res) => {
+router.get('/export-csv', async (req, res) => {
+  const { from, to } = req.query;
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const tickets = await Ticket.find({ createdAt: { $gte: today } })
+  const fromDate = from ? new Date(from) : today;
+  const toDate   = to   ? new Date(`${to}T23:59:59`) : new Date();
+
+  const tickets = await Ticket.find({ createdAt: { $gte: fromDate, $lte: toDate } })
     .populate('registeredBy', 'name extension')
     .sort({ createdAt: -1 })
     .lean();
