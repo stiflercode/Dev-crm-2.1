@@ -97,8 +97,8 @@ router.patch('/:id/toggle', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id/password', async (req, res) => {
   const { newPassword } = req.body;
-  if (!newPassword || newPassword.length < 8) {
-    return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
+  if (!newPassword || newPassword.length < 12) {
+    return res.status(400).json({ error: 'newPassword must be at least 12 characters' });
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 12);

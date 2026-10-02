@@ -8,7 +8,9 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import connectDB from './config/db.js';
 import authRouter from './routes/auth.js';
 import ticketsRouter from './routes/tickets.js';
@@ -17,8 +19,47 @@ import lienRouter from './routes/lien.js';
 import agentsRouter from './routes/agents.js';
 import reportsRouter from './routes/reports.js';
 
+// ─── Startup Guards ───────────────────────────────────────────────────────────
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.includes('CHANGE_ME')) {
+  console.error('❌  FATAL: JWT_SECRET is not set or is a placeholder. Set a real secret in .env');
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// ─── Security Headers (Helmet) ────────────────────────────────────────────────
+// Sets X-Frame-Options, X-Content-Type-Options, X-DNS-Prefetch-Control, etc.
+// Must be first middleware.
+app.use(
+  helmet({
+    // Relax CSP for local dev — tighten in production
+    contentSecurityPolicy: process.env.NODE_ENV === 'production',
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
+// ─── Global Rate Limiting ─────────────────────────────────────────────────────
+// Broad limiter: 200 req / 15 min per IP (covers all /api/* routes)
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+// Strict login limiter: 20 attempts / 15 min per IP
+export const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please wait 15 minutes.' },
+  skipSuccessfulRequests: true, // only count failed attempts
+});
+
+app.use('/api', globalLimiter);
 
 // ─── Database (lazy per-request) ─────────────────────────────────────────────
 // connectDB is NOT called at startup — the server boots instantly.
@@ -51,15 +92,15 @@ app.use(
 );
 
 // ─── Core Middleware ─────────────────────────────────────────────────────────
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 // cookieParser MUST come before any route that reads req.cookies.
 // This is what makes the HttpOnly 'crm_token' cookie available to verifyToken.
 app.use(cookieParser());
 
-
 // ─── Routes ──────────────────────────────────────────────────────────────────
 // All routes go through dbMiddleware so DB connects on first real request.
+// loginLimiter is applied ONLY to the login endpoint (strict brute-force guard).
 app.use('/api/auth',    dbMiddleware, authRouter);
 app.use('/api/tickets', dbMiddleware, ticketsRouter);
 app.use('/api/users',   dbMiddleware, usersRouter);

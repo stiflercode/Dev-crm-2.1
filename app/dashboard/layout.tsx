@@ -16,7 +16,7 @@ import { GoldenHourModal } from '@/components/shared/GoldenHourModal';
 import { DashboardShell } from '@/components/layout/DashboardShell';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, loginTimestamp } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -34,14 +34,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const showGoldenHour = user.role === 'L2' || user.role === 'L3';
-  const loginTimestamp = Math.floor(Date.now() / 1000);
 
   return (
     <DashboardShell
       role={user.role}
       userName={user.name ?? 'Agent'}
       extension={user.extension ?? '-'}
-      loginTimestamp={loginTimestamp}
+      loginTimestamp={loginTimestamp ?? Math.floor(Date.now() / 1000)}
       showGoldenHour={showGoldenHour}
     >
       {children}
