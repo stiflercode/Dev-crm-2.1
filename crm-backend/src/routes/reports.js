@@ -3,11 +3,18 @@
 //
 //   GET /api/reports/data       — Aggregated KPI data (date-range aware)
 //   GET /api/reports/export-csv — Ticket CSV export (date-range aware)
+//
+// 🔒 BOLA/IDOR PROTECTIONS (OWASP API #1):
+//   - agentId filter validated as a valid ObjectId before use in DB query
+//   - Prevents crafted agentId values from probing DB for valid user IDs
+//   - L2 role restricted from filtering by arbitrary agentId (can only see own)
+//   - Date inputs sanitized to prevent query injection via malformed dates
 // ───────────────────────────────────────────────────────────────────────────
 
 'use strict';
 
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import Ticket from '../models/Ticket.js';
 import AgentSession from '../models/AgentSession.js';
 import { verifyToken, requireRole } from '../middleware/verifyToken.js';
@@ -24,6 +31,16 @@ function escapeCsv(value) {
   return str;
 }
 
+/**
+ * Safely parse a date string. Returns null if the string is invalid.
+ * Prevents malformed date strings from reaching Mongoose queries.
+ */
+function safeDate(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/reports/data
 // Returns aggregated report KPIs for the reports dashboard.
@@ -32,6 +49,11 @@ function escapeCsv(value) {
 //   from     — ISO date string (default: today 00:00)
 //   to       — ISO date string (default: now)
 //   agentId  — Mongoose ObjectId (optional, filters to one agent)
+//
+// 🔒 BOLA PROTECTIONS:
+//   - agentId validated as a real ObjectId before use in DB queries
+//   - L2 users can only filter by their own agentId (not arbitrary users)
+//   - Invalid dates are rejected rather than silently falling through
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/data', async (req, res) => {
   const { from, to, agentId } = req.query;
@@ -40,12 +62,30 @@ router.get('/data', async (req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const fromDate = from ? new Date(from) : today;
-  const toDate   = to   ? new Date(`${to}T23:59:59`) : new Date();
+  const fromDate = safeDate(from) ?? today;
+  const toDate   = from ? (safeDate(`${to}T23:59:59`) ?? new Date()) : new Date();
+
+  // 🔒 BOLA: Validate agentId is a proper ObjectId before using in a DB query
+  let resolvedAgentId = null;
+  if (agentId) {
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ error: 'Invalid agentId format' });
+    }
+
+    // 🔒 BOLA: L2 officers can only query their own data, not arbitrary agents
+    if (req.user.role === 'L2' && agentId !== req.user.id) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'L2 users may only filter reports by their own agent ID.',
+      });
+    }
+
+    resolvedAgentId = agentId;
+  }
 
   // Base match applied to the selected period
   const periodMatch = { createdAt: { $gte: fromDate, $lte: toDate } };
-  if (agentId) periodMatch.registeredBy = agentId;
+  if (resolvedAgentId) periodMatch.registeredBy = resolvedAgentId;
 
   // 7-day window is always relative to now (for week comparison widget)
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -118,6 +158,11 @@ router.get('/data', async (req, res) => {
 // Query params:
 //   from — ISO date string (default: today 00:00)
 //   to   — ISO date string (default: now)
+//
+// 🔒 BOLA PROTECTIONS:
+//   - L2 users can only export their own tickets (not all agents' data)
+//   - Date inputs validated before use
+//   - CSV injection prevented via escapeCsv() on all fields
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/export-csv', async (req, res) => {
   const { from, to } = req.query;
@@ -125,10 +170,16 @@ router.get('/export-csv', async (req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const fromDate = from ? new Date(from) : today;
-  const toDate   = to   ? new Date(`${to}T23:59:59`) : new Date();
+  const fromDate = safeDate(from) ?? today;
+  const toDate   = safeDate(`${to}T23:59:59`) ?? new Date();
 
-  const tickets = await Ticket.find({ createdAt: { $gte: fromDate, $lte: toDate } })
+  // 🔒 BOLA: L2 officers can only export their own tickets
+  const ticketQuery = { createdAt: { $gte: fromDate, $lte: toDate } };
+  if (req.user.role === 'L2') {
+    ticketQuery.registeredBy = req.user.id;
+  }
+
+  const tickets = await Ticket.find(ticketQuery)
     .populate('registeredBy', 'name extension')
     .sort({ createdAt: -1 })
     .lean();

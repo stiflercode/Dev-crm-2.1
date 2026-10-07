@@ -6,8 +6,14 @@
 //   POST /api/tickets           — Create a new ticket
 //   GET  /api/tickets/my        — L1 agent's own tickets
 //   GET  /api/tickets/search    — Search with filters
+//   GET  /api/tickets/:id       — Single ticket (role-scoped)
 //   PATCH /api/tickets/:id/disposition — Update call disposition
 //   POST /api/tickets/draft     — Save a draft ticket
+//
+// 🔒 BOLA/IDOR PROTECTIONS (OWASP API #1):
+//   - validateObjectId() on all :id parameters
+//   - enforceTicketAccess() on single-ticket routes (L1 own only)
+//   - registeredBy always set from JWT, body override stripped
 // ───────────────────────────────────────────────────────────────────────────
 
 'use strict';
@@ -17,6 +23,7 @@ import Ticket from '../models/Ticket.js';
 import AgentSession from '../models/AgentSession.js';
 import { getNextSeq } from '../models/Counter.js';
 import { verifyToken, requireRole } from '../middleware/verifyToken.js';
+import { validateObjectId, enforceTicketAccess } from '../middleware/objectAuth.js';
 
 const router = Router();
 
@@ -80,7 +87,7 @@ router.get('/', async (req, res) => {
   const query = {};
 
   if (req.user.role === 'L1') {
-    // L1 agents can only see their own tickets
+    // 🔒 BOLA: L1 agents can only see their own tickets
     query.registeredBy = req.user.id;
   } else {
     // L2/L3: apply optional filters
@@ -131,10 +138,9 @@ router.get('/my', async (req, res) => {
 // GET /api/tickets/search
 // Query params: mobileNumber, nccrpNumber, complaintNumber, district, status, fromDate, toDate
 //
-// ⚠️  APPSEC TEST POINT #6 — BROKEN OBJECT LEVEL AUTHORIZATION (BOLA/IDOR)
-// ─────────────────────────────────────────────────────────────────────────────
-// L1 agents are forced into query.registeredBy = req.user.id below.
-// To simulate IDOR: remove that constraint and let L1 search all tickets.
+// 🔒 BOLA PROTECTION:
+//   L1 agents are forced into query.registeredBy = req.user.id below.
+//   L2/L3 can search all tickets.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/search', async (req, res) => {
   const { mobileNumber, nccrpNumber, complaintNumber, district, status, fromDate, toDate } = req.query;
@@ -187,8 +193,26 @@ router.get('/search', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/tickets/:id
+// Single ticket access — role-scoped via enforceTicketAccess.
+//
+// 🔒 BOLA: L1 can only access own tickets, L2/L3 can access any.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id', validateObjectId('id'), enforceTicketAccess(), async (req, res) => {
+  // req.ticket is loaded by enforceTicketAccess()
+  const ticket = await Ticket.findById(req.params.id)
+    .populate('registeredBy', 'name extension')
+    .lean();
+
+  res.json({ ticket: serializeTicket(ticket) });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/tickets
 // Body: CreateTicketInput (same shape as the original Server Action)
+//
+// 🔒 BOLA: registeredBy is ALWAYS set from the JWT — never from the request body.
+//    Any attempt to spoof registeredBy in the body is silently stripped.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const input = req.body;
@@ -196,6 +220,10 @@ router.post('/', async (req, res) => {
   if (!input.victimDetails || !input.categoryDetails) {
     return res.status(400).json({ error: 'victimDetails and categoryDetails are required' });
   }
+
+  // 🔒 BOLA: Strip any client-supplied registeredBy / assignedTo to prevent spoofing
+  delete input.registeredBy;
+  delete input.assignedTo;
 
   const incidentDateTime = input.incidentDateTime ? new Date(input.incidentDateTime) : undefined;
   const golden = isGoldenHour(incidentDateTime);
@@ -222,6 +250,7 @@ router.post('/', async (req, res) => {
     recoveryRate: 0,
     isGoldenHour: golden,
     incidentDateTime,
+    // 🔒 BOLA: Always use the authenticated user's ID from the JWT
     registeredBy: req.user.id,
   });
 
@@ -244,9 +273,15 @@ router.post('/', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/tickets/draft
+//
+// 🔒 BOLA: Same protections as POST /api/tickets — registeredBy from JWT only.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/draft', async (req, res) => {
   const input = req.body;
+
+  // 🔒 BOLA: Strip any client-supplied registeredBy / assignedTo
+  delete input.registeredBy;
+  delete input.assignedTo;
 
   const complaintId = await generateComplaintId();
   const totalFraudAmount = (input.transactions ?? []).reduce((s, t) => s + (t.transactionAmount || 0), 0);
@@ -271,6 +306,7 @@ router.post('/draft', async (req, res) => {
     recoveryRate: 0,
     isGoldenHour: false,
     incidentDateTime: input.incidentDateTime ? new Date(input.incidentDateTime) : undefined,
+    // 🔒 BOLA: Always use the authenticated user's ID from the JWT
     registeredBy: req.user.id,
   });
 
@@ -281,25 +317,36 @@ router.post('/draft', async (req, res) => {
 // PATCH /api/tickets/:id/disposition
 // Body: { disposition: string }
 //
-// ⚠️  APPSEC TEST POINT #3 (continued) — RBAC
-// requireRole is not set here — any authenticated user can update disposition.
-// To test privilege escalation: remove requireRole from the users router instead.
+// 🔒 BOLA PROTECTION:
+//   - ObjectId validated via validateObjectId()
+//   - enforceTicketAccess() ensures L1 can only update their own tickets
+//   - L2/L3 can update any ticket's disposition
+//   - Status field is NOT accepted from body (prevents status manipulation)
 // ─────────────────────────────────────────────────────────────────────────────
-router.patch('/:id/disposition', async (req, res) => {
-  const { disposition } = req.body;
+router.patch('/:id/disposition',
+  validateObjectId('id'),
+  enforceTicketAccess(),
+  async (req, res) => {
+    const { disposition } = req.body;
 
-  if (!disposition) {
-    return res.status(400).json({ error: 'disposition is required' });
+    if (!disposition) {
+      return res.status(400).json({ error: 'disposition is required' });
+    }
+
+    const validDispositions = ['CYBER_FRAUD_COMPLAINT', 'BLANK_CALL', 'ENQUIRY', 'MISDIAL', 'REPEAT_CALLER'];
+    if (!validDispositions.includes(disposition)) {
+      return res.status(400).json({ error: `Invalid disposition. Must be one of: ${validDispositions.join(', ')}` });
+    }
+
+    const newStatus = disposition === 'CYBER_FRAUD_COMPLAINT' ? 'L2_PENDING' : 'L1_REGISTERED';
+
+    await Ticket.findByIdAndUpdate(req.params.id, {
+      callDisposition: disposition,
+      status: newStatus,
+    });
+
+    res.json({ success: true });
   }
-
-  const newStatus = disposition === 'CYBER_FRAUD_COMPLAINT' ? 'L2_PENDING' : 'L1_REGISTERED';
-
-  await Ticket.findByIdAndUpdate(req.params.id, {
-    callDisposition: disposition,
-    status: newStatus,
-  });
-
-  res.json({ success: true });
-});
+);
 
 export default router;

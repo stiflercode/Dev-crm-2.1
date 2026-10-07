@@ -7,6 +7,12 @@
 //   PATCH /api/agents/status            — Update agent status
 //   GET   /api/agents/roster            — Today's roster (L3 only)
 //   POST  /api/agents/verify-password   — Verify password for unlock screen
+//
+// 🔒 BOLA/IDOR PROTECTIONS (OWASP API #1):
+//   - validateObjectId() on all :id / :agentId parameters
+//   - Break end validates break belongs to the requesting agent's session
+//   - Force-logout validates target agent exists and is not the requester
+//   - All agent-scoped operations use req.user.id from JWT (never from body)
 // ───────────────────────────────────────────────────────────────────────────
 
 'use strict';
@@ -16,6 +22,7 @@ import bcrypt from 'bcryptjs';
 import AgentSession from '../models/AgentSession.js';
 import User from '../models/User.js';
 import { verifyToken, requireRole } from '../middleware/verifyToken.js';
+import { validateObjectId, preventSelfTarget } from '../middleware/objectAuth.js';
 
 const router = Router();
 router.use(verifyToken);
@@ -38,6 +45,9 @@ function getTodayDate() {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/agents/breaks/start
 // Body: { breakType: 'LUNCH' | 'TEA' | 'BIO' | 'TRAINING' | 'FEEDBACK_QUERY' }
+//
+// 🔒 BOLA: Agent identity is always taken from req.user.id (JWT).
+//    The request body cannot override which agent the break is started for.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/breaks/start', async (req, res) => {
   const { breakType } = req.body;
@@ -59,6 +69,12 @@ router.post('/breaks/start', async (req, res) => {
     }).lean();
 
     if (agentSession) {
+      // 🔒 BOLA: Check for already-active break to prevent double-breaks
+      const hasActiveBreak = agentSession.breaks.some((b) => !b.endTime);
+      if (hasActiveBreak) {
+        return res.status(400).json({ error: 'You already have an active break. End it first.' });
+      }
+
       const usedCappedSeconds = agentSession.breaks
         .filter((b) => b.isCapped && b.durationSeconds)
         .reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
@@ -84,16 +100,30 @@ router.post('/breaks/start', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/agents/breaks/:id/end
+//
+// 🔒 BOLA PROTECTIONS:
+//   - ObjectId validated
+//   - Break must belong to the requesting agent's session (not someone else's)
+//   - Break must not already be ended (prevents replay/double-end)
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/breaks/:id/end', async (req, res) => {
+router.post('/breaks/:id/end', validateObjectId('id'), async (req, res) => {
   const today = getTodayDate();
   const endTime = new Date();
 
+  // 🔒 BOLA: Only look up the session belonging to the authenticated user
   const agentSession = await AgentSession.findOne({ agentId: req.user.id, shiftDate: today });
   if (!agentSession) return res.status(404).json({ error: 'No active session' });
 
   const breakEntry = agentSession.breaks.find((b) => b._id?.toString() === req.params.id);
-  if (!breakEntry) return res.status(404).json({ error: 'Break not found' });
+  if (!breakEntry) {
+    // 🔒 BOLA: Return generic 404 — don't reveal if break exists in another agent's session
+    return res.status(404).json({ error: 'Break not found' });
+  }
+
+  // 🔒 Prevent double-ending a break (replay attack)
+  if (breakEntry.endTime) {
+    return res.status(400).json({ error: 'This break has already been ended' });
+  }
 
   const durationSeconds = Math.floor((endTime.getTime() - breakEntry.startTime.getTime()) / 1000);
 
@@ -115,6 +145,8 @@ router.post('/breaks/:id/end', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/agents/status
 // Body: { status: 'AVAILABLE' | 'ON_CALL' | 'WRAP_UP' | 'OFFLINE' }
+//
+// 🔒 BOLA: Status update is scoped to req.user.id from JWT only.
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch('/status', async (req, res) => {
   const { status } = req.body;
@@ -138,6 +170,8 @@ router.patch('/status', async (req, res) => {
 // POST /api/agents/verify-password
 // Body: { password: string }
 // Used by the lock screen — validates password without issuing a new token.
+//
+// 🔒 BOLA: Uses req.user.id from JWT to look up the user. No user ID in body.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/verify-password', async (req, res) => {
   const { password } = req.body;
@@ -295,25 +329,43 @@ router.get('/login-log', requireRole('L3'), async (_req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/agents/:agentId/force-logout
 // Supervisor force-sets an agent's status to OFFLINE. L3 only.
+//
+// 🔒 BOLA PROTECTIONS:
+//   - validateObjectId: rejects malformed agent IDs
+//   - preventSelfTarget: supervisor cannot force-logout themselves
+//   - Target agent verified to exist before mutation
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/:agentId/force-logout', requireRole('L3'), async (req, res) => {
-  const { agentId } = req.params;
-  const today = getTodayDate();
+router.post('/:agentId/force-logout',
+  requireRole('L3'),
+  validateObjectId('agentId'),
+  preventSelfTarget('agentId'),
+  async (req, res) => {
+    const { agentId } = req.params;
+    const today = getTodayDate();
 
-  // Verify the target agent exists
-  const agent = await User.findById(agentId).lean();
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    // 🔒 Verify the target agent exists
+    const agent = await User.findById(agentId).lean();
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
 
-  const result = await AgentSession.findOneAndUpdate(
-    { agentId, shiftDate: today },
-    { $set: { currentStatus: 'OFFLINE', statusChangedAt: new Date() } },
-    { new: true }
-  );
+    // 🔒 Prevent force-logout of other L3 admins (horizontal privilege escalation)
+    if (agent.role === 'L3' && agentId !== req.user.id) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Cannot force-logout another administrator.',
+      });
+    }
 
-  if (!result) return res.status(404).json({ error: 'No active session for this agent today' });
+    const result = await AgentSession.findOneAndUpdate(
+      { agentId, shiftDate: today },
+      { $set: { currentStatus: 'OFFLINE', statusChangedAt: new Date() } },
+      { new: true }
+    );
 
-  res.json({ success: true, agentId, message: `${agent.name} has been force logged out` });
-});
+    if (!result) return res.status(404).json({ error: 'No active session for this agent today' });
+
+    res.json({ success: true, agentId, message: `${agent.name} has been force logged out` });
+  }
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/agents/call-log
