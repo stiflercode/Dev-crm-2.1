@@ -15,6 +15,12 @@
 //   router.get('/api/users', verifyToken, requireRole('L3'), handler);
 //   router.patch('/api/tickets/:id', verifyToken, requireRole('L2', 'L3'), handler);
 //
+// 🔒 BOLA/IDOR PROTECTIONS → see middleware/objectAuth.js
+//   validateObjectId()    — validates MongoDB ObjectId params before DB queries
+//   requireOwnership()    — verifies requesting user owns the target document
+//   enforceTicketAccess() — L1 can only access own tickets; L2/L3 access all
+//   preventSelfTarget()   — blocks admin actions on their own account
+//
 // ⚠️  APPSEC TEST POINT #2 — JWT VERIFICATION
 // ─────────────────────────────────────────────────────────────────────────────
 // To simulate a broken authentication vulnerability (OWASP A07):
@@ -29,6 +35,22 @@
 //   - Remove requireRole() from a protected route
 //   - Or change requireRole('L3') to requireRole('L1', 'L2', 'L3')
 //     to grant all roles access to admin endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ⚠️  APPSEC TEST POINT #6 — BOLA / IDOR (OWASP API Security #1)
+// ─────────────────────────────────────────────────────────────────────────────
+// To simulate IDOR vulnerabilities (for security testing only):
+//   - Remove validateObjectId() from a route → crash server with malformed IDs
+//   - Remove enforceTicketAccess() from PATCH /tickets/:id/disposition
+//     → any L1 agent can modify any ticket regardless of ownership
+//   - Remove preventSelfTarget() from PATCH /users/:id/toggle
+//     → admin can disable their own account (denial of service)
+//   - Remove preventSelfTarget() from POST /agents/:agentId/force-logout
+//     → admin can force-logout themselves
+//   - Set registeredBy from req.body instead of req.user.id in POST /tickets
+//     → any agent can create tickets attributed to another agent
+//   - Remove L2 agentId scope check in GET /reports/data
+//     → L2 officers can pull any agent's performance data
 // ─────────────────────────────────────────────────────────────────────────────
 
 'use strict';
